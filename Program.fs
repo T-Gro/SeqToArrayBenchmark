@@ -13,31 +13,34 @@ open BenchmarkDotNet.Order
 open BenchmarkDotNet.Mathematics
 
 
+[<Literal>] 
+let arrayBuilderStartingSize = 4
+
 [<Struct>]
 [<NoEquality>]
 [<NoComparison>]
-type ArrayBuilder<'T> = {mutable currentCount : int; mutable currentArray : 'T array}
-    with
-        [<MethodImpl(MethodImplOptions.AggressiveInlining)>]
-        member this.Add(item:'T) = 
-            match this.currentCount with          
-            | x when x < this.currentArray.Length ->
-                this.currentArray[this.currentCount] <- item
-                this.currentCount <- this.currentCount + 1
-            | _ ->
-                let newSize = this.currentArray.Length * 2
-                let newArr = Array.zeroCreate newSize
-                this.currentArray.CopyTo(newArr,0)        
-                this.currentArray <- newArr
-                newArr[this.currentCount] <- item
-                this.currentCount <- this.currentCount + 1
+type ArrayBuilder<'T> =
+    {
+        mutable currentCount: int
+        mutable currentArray: 'T array
+    }
 
-        member this.ToArray() =
-            match this.currentCount with         
-            | x when this.currentCount = this.currentArray.Length -> this.currentArray
-            | _ ->
-                let finalArr = this.currentArray |> Array.truncate this.currentCount
-                finalArr
+let inline addToBuilder (item: 'T) (builder:byref<ArrayBuilder<'T>>) = 
+    match builder.currentCount = builder.currentArray.Length with
+    | false ->
+        builder.currentArray[ builder.currentCount ] <- item
+        builder.currentCount <- builder.currentCount + 1
+    | true ->
+        let newArr = Array.zeroCreate (builder.currentArray.Length * 2)
+        builder.currentArray.CopyTo(newArr, 0)
+        builder.currentArray <- newArr
+        newArr[builder.currentCount] <- item
+        builder.currentCount <- builder.currentCount + 1
+
+let inline builderToArray (builder:inref<ArrayBuilder<'T>>) = 
+    match builder.currentCount = builder.currentArray.Length with
+    | true -> builder.currentArray
+    | false -> builder.currentArray |> Array.truncate builder.currentCount
 
 [<Struct>]
 type InnerRecord = {X : int64; Y : float; Z : int64}
@@ -56,7 +59,7 @@ let stackAllocHuge = 50
 type SeqToArrayBenchmark()   = 
 
 
-    [<Params(0,1,2,3,4,5,6,7,8,9,10,16,20,50,100,500,1024,1025,100_000, Priority = 0)>] 
+    [<Params(0,1,2,3,4,5,6,7,8,9,10,16,20,50,512,513, Priority = 0)>] 
     member val NumberOfItems = -1 with get,set
 
     member val ItemsSequence = Unchecked.defaultof<seq<InnerRecord>> with get,set
@@ -80,20 +83,20 @@ type SeqToArrayBenchmark()   =
 
     [<Benchmark()>]
     member this.ManualBuilder () = 
-        let builder = {currentCount = 0; currentArray = Array.zeroCreate 4}
+        let mutable builder = {currentCount = 0; currentArray = Array.zeroCreate arrayBuilderStartingSize}
         for item in this.ItemsSequence do
-            builder.Add(item)
-        builder.ToArray()
+            addToBuilder item &builder
+        builderToArray &builder
 
     [<Benchmark()>]
     member this.ManualSpecialCase0 () =         
         use e = this.ItemsSequence.GetEnumerator()
         if e.MoveNext() then
             let arr = [|e.Current;Unchecked.defaultof<_>;Unchecked.defaultof<_>;Unchecked.defaultof<_>|]
-            let builder = {currentCount = 1; currentArray = arr}            
+            let mutable builder = {currentCount = 1; currentArray = arr}            
             while e.MoveNext() do
-                builder.Add(e.Current)
-            builder.ToArray()
+                addToBuilder e.Current &builder
+            builderToArray &builder
         else Array.empty
 
     [<Benchmark()>]
@@ -107,12 +110,12 @@ type SeqToArrayBenchmark()   =
             smallCounter <- smallCounter + 1
 
         let arr = Array.init smallCounter (NativePtr.get stackFor8) 
-        let builder = {currentCount = smallCounter; currentArray = arr}            
+        let mutable builder = {currentCount = smallCounter; currentArray = arr}            
         while e.MoveNext() do
-            builder.Add(e.Current)
-        builder.ToArray()
+            addToBuilder e.Current &builder
+        builderToArray &builder
 
-    [<Benchmark()>]
+    //[<Benchmark()>]
     member this.ManualStackAllocUpTo16 () = 
         let stackFor8 = NativePtr.stackalloc<InnerRecord> stackAllocDouble
         let mutable smallCounter = 0
@@ -123,12 +126,12 @@ type SeqToArrayBenchmark()   =
             smallCounter <- smallCounter + 1
 
         let arr = Array.init smallCounter (NativePtr.get stackFor8) 
-        let builder = {currentCount = smallCounter; currentArray = arr}            
+        let mutable builder = {currentCount = smallCounter; currentArray = arr}            
         while e.MoveNext() do
-            builder.Add(e.Current)
-        builder.ToArray()
+            addToBuilder e.Current &builder
+        builderToArray &builder
 
-    [<Benchmark()>]
+    //[<Benchmark()>]
     member this.StackAllocHuge () =  
         let stackFor8 = NativePtr.stackalloc<InnerRecord> stackAllocHuge
         let mutable smallCounter = 0
@@ -139,10 +142,10 @@ type SeqToArrayBenchmark()   =
             smallCounter <- smallCounter + 1
 
         let arr = Array.init smallCounter (NativePtr.get stackFor8) 
-        let builder = {currentCount = smallCounter; currentArray = arr}            
+        let mutable builder = {currentCount = smallCounter; currentArray = arr}            
         while e.MoveNext() do
-            builder.Add(e.Current)
-        builder.ToArray()
+            addToBuilder e.Current &builder
+        builderToArray &builder
 
 
 
